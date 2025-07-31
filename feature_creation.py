@@ -87,11 +87,27 @@ def create_employee_features(df):
         "#_demotions_in_last_3y",
         when((col("event_cd") == "DEM") & 
              (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
+    )
+    
+    # **LINES 97-105: UPDATED LOGIC FOR DAYS SINCE LAST PROMOTION**
+    # First, get the most recent promotion date for each person from event records
+    latest_promotion_from_events = features_expanded.filter(col("event_cd") == "PRO") \
+        .withColumn("latest_promo_from_events", 
+                   min("event_eff_dt").over(window_spec_person)) \
+        .select("person_composite_id", "latest_promo_from_events").distinct()
+    
+    # Join back to get the latest promotion date from events
+    features_expanded = features_expanded.join(
+        latest_promotion_from_events, on="person_composite_id", how="left"
     ).withColumn(
-        # Days since last promotion (calculated for each record)
+        # Days since last promotion with updated logic
         "#_of_days_since_last_promotion",
-        when((col("lst_promo_dt").isNotNull()) & (col("lst_promo_dt") <= col("vantage_date")),
-             datediff(col("vantage_date"), col("lst_promo_dt"))).otherwise(None)
+        when(col("lst_promo_dt").isNotNull() & (col("lst_promo_dt") <= col("vantage_date")),
+             datediff(col("vantage_date"), col("lst_promo_dt")))
+        .when(col("lst_promo_dt").isNull() & col("latest_promo_from_events").isNotNull() & 
+              (col("latest_promo_from_events") <= col("vantage_date")),
+             datediff(col("vantage_date"), col("latest_promo_from_events")))
+        .otherwise(None)
     )
     
     # Step 2: Calculate promotion intervals for average days calculation
@@ -190,7 +206,7 @@ def create_employee_features(df):
     ).withColumn(
         # Get the days since last promotion (should be same for all records of a person)
         "#_of_days_since_last_promotion_final",
-        max("#_of_days_since_last_promotion").over(window_spec_person)
+        min("#_of_days_since_last_promotion").over(window_spec_person)
     ).withColumn(
         # Get average days (should be same for all records of a person)
         "avg_days_between_promotion_final",
@@ -369,19 +385,30 @@ def validate_features(features_df):
         print(f"  ✗ FAIL: {binary_count_issues} binary-count inconsistencies found")
     print()
     
-    # Validation 6: Days Since Last Promotion Logic
+    # **LINES 237-247: UPDATED VALIDATION FOR DAYS SINCE LAST PROMOTION**
     print("✓ VALIDATION 6 - DAYS SINCE LAST PROMOTION LOGIC:")
     
-    # Should be null only when lst_promo_dt is null or after vantage_date
+    # Should be null only when both lst_promo_dt is null AND no promotion events exist
+    # or when promotion dates are after vantage_date
     days_logic_issues = features_df.filter(
-        # Case 1: days is negative
+        # Case 1: days is negative (should never happen)
         (col("#_of_days_since_last_promotion") < 0)
     ).count()
     
-    if days_logic_issues == 0:
+    # Additional check: if days is null, verify no valid promotion dates exist
+    null_days_with_valid_promos = features_df.filter(
+        (col("#_of_days_since_last_promotion").isNull()) &
+        (col("#_promotions_in_last_3y") > 0)  # Has promotions but days is null
+    ).count()
+    
+    total_days_issues = days_logic_issues + null_days_with_valid_promos
+    
+    if total_days_issues == 0:
         print("  ✓ PASS: Days since last promotion logic is correct")
     else:
-        print(f"  ✗ FAIL: {days_logic_issues} records have incorrect days since last promotion")
+        print(f"  ✗ FAIL: {total_days_issues} records have incorrect days since last promotion")
+        print(f"    - Negative days: {days_logic_issues}")
+        print(f"    - Null days with valid promotions: {null_days_with_valid_promos}")
     print()
     
     # Validation 7: Average Days Between Promotions Logic
@@ -462,7 +489,7 @@ def validate_features(features_df):
         all_counts_valid,                   # Non-negative counts
         temporal_issues == 0,               # Temporal consistency
         binary_count_issues == 0,           # Binary-count relationship
-        days_logic_issues == 0,             # Days logic
+        total_days_issues == 0,             # Days logic (updated variable name)
         total_avg_issues == 0,              # Average days logic
         completeness_issues == 0,           # Completeness
         range_issues == 0                   # Range validation

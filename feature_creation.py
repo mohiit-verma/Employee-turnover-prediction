@@ -20,22 +20,29 @@ def create_employee_features(df):
     DataFrame with one record per employee containing all features
     """
     
+    print("Starting feature engineering process...")
+    
     # Convert date columns to proper date format if they're strings
+    print("Converting date columns to proper format...")
     df = df.withColumn("vantage_date", to_date(col("vantage_date"))) \
            .withColumn("event_eff_dt", to_date(col("event_eff_dt"))) \
            .withColumn("lst_promo_dt", to_date(col("lst_promo_dt")))
     
     # Filter for events that happened before or on vantage date
+    print("Filtering events that occurred before or on vantage date...")
     df_filtered = df.filter(col("event_eff_dt") <= col("vantage_date"))
     
     # Cache the filtered dataframe as it will be used multiple times
+    print("Caching filtered dataframe for performance...")
     df_filtered.cache()
     
     # Define window specifications
+    print("Setting up window specifications for aggregations...")
     window_spec_person = Window.partitionBy("person_composite_id")
     window_spec_person_ordered = Window.partitionBy("person_composite_id").orderBy("event_eff_dt")
     
     # Step 1: Generate all features for each record
+    print("Step 1: Generating individual feature flags for each record...")
     features_expanded = df_filtered.withColumn(
         # Binary flags for promotions in last 1, 2, 3 years
         "promoted_in_last_1y",
@@ -89,8 +96,11 @@ def create_employee_features(df):
              (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
     )
     
+    print("Step 1 completed: Individual feature flags generated")
+    
     # **LINES 97-105: UPDATED LOGIC FOR DAYS SINCE LAST PROMOTION**
     # First, get the most recent promotion date for each person from event records
+    print("Step 2: Calculating days since last promotion with fallback logic...")
     latest_promotion_from_events = features_expanded.filter(col("event_cd") == "PRO") \
         .withColumn("latest_promo_from_events", 
                    min("event_eff_dt").over(window_spec_person)) \
@@ -111,9 +121,11 @@ def create_employee_features(df):
     )
     
     # Step 2: Calculate promotion intervals for average days calculation
+    print("Step 3: Calculating promotion intervals for average days between promotions...")
     promotion_records = features_expanded.filter(col("event_cd") == "PRO")
     
     # Add previous promotion date using window function
+    print("Adding lag values to calculate intervals between consecutive promotions...")
     promotion_with_lag = promotion_records.withColumn(
         "prev_promo_date",
         lag("event_eff_dt").over(window_spec_person_ordered)
@@ -124,6 +136,7 @@ def create_employee_features(df):
     )
     
     # Calculate running statistics for average days between promotions
+    print("Calculating average days between promotions for each employee...")
     promotion_with_stats = promotion_with_lag.withColumn(
         "promotion_rank",
         row_number().over(window_spec_person_ordered)
@@ -147,6 +160,7 @@ def create_employee_features(df):
     )
     
     # Step 3: Join promotion statistics back to main dataset
+    print("Step 4: Joining promotion statistics back to main dataset...")
     promotion_avg_only = promotion_with_stats.select(
         "person_composite_id", 
         "vantage_date",
@@ -161,6 +175,7 @@ def create_employee_features(df):
     ).fillna({"avg_days_between_promotion": 0})
     
     # Step 4: Aggregate all features per person using window functions to get final values
+    print("Step 5: Aggregating all features per person using window functions...")
     features_aggregated = features_with_avg.withColumn(
         # Get latest vantage date for each person
         "latest_vantage_date",
@@ -214,6 +229,7 @@ def create_employee_features(df):
     )
     
     # Step 5: Get one record per person with final aggregated features
+    print("Step 6: Creating final dataset with one record per employee...")
     final_features = features_aggregated.filter(
         col("vantage_date") == col("latest_vantage_date")
     ).select(
@@ -236,11 +252,14 @@ def create_employee_features(df):
     ).distinct()
     
     # Cache final results
+    print("Caching final results...")
     final_features.cache()
     
     # Unpersist intermediate cached dataframes to free memory
+    print("Cleaning up intermediate cached dataframes...")
     df_filtered.unpersist()
     
+    print("Feature engineering completed successfully!")
     return final_features
 
 def validate_features(features_df):
@@ -519,11 +538,23 @@ def main(input_df):
     """
     
     try:
+        print("="*50)
+        print("EMPLOYEE FEATURE ENGINEERING PIPELINE")
+        print("="*50)
+        
         # Create features
         features_df = create_employee_features(input_df)
         
+        print("\n" + "="*50)
+        print("STARTING FEATURE VALIDATION")
+        print("="*50)
+        
         # Validate features
         validate_features(features_df)
+        
+        print("\n" + "="*50)
+        print("PIPELINE COMPLETED SUCCESSFULLY")
+        print("="*50)
         
         return features_df
         

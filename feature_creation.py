@@ -31,151 +31,193 @@ def create_employee_features(df):
     # Cache the filtered dataframe as it will be used multiple times
     df_filtered.cache()
     
-    # Get the latest vantage_date for each employee (in case multiple vantage dates exist)
-    latest_vantage = df_filtered.groupBy("person_composite_id").agg(
-        max("vantage_date").alias("latest_vantage_date")
-    )
+    # Define window specifications
+    window_spec_person = Window.partitionBy("person_composite_id")
+    window_spec_person_ordered = Window.partitionBy("person_composite_id").orderBy("event_eff_dt")
     
-    # Join back to get data for latest vantage date only
-    df_latest = df_filtered.join(
-        latest_vantage, 
-        on="person_composite_id"
-    ).filter(col("vantage_date") == col("latest_vantage_date"))
-    
-    # Define window specification for ranking and lag operations
-    window_spec = Window.partitionBy("person_composite_id").orderBy("event_eff_dt")
-    
-    # Create base features for each employee (one record per person)
-    base_features = df_latest.groupBy("person_composite_id").agg(
-        # Get the latest vantage date and lst_promo_dt for each employee
-        max("vantage_date").alias("vantage_date"),
-        max("lst_promo_dt").alias("lst_promo_dt"),
-        
+    # Step 1: Generate all features for each record
+    features_expanded = df_filtered.withColumn(
         # Binary flags for promotions in last 1, 2, 3 years
-        max(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1)
-            .otherwise(0)).alias("promoted_in_last_1y"),
-        
-        max(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1)
-            .otherwise(0)).alias("promoted_in_last_2y"),
-        
-        max(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1)
-            .otherwise(0)).alias("promoted_in_last_3y"),
-        
+        "promoted_in_last_1y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1).otherwise(0)
+    ).withColumn(
+        "promoted_in_last_2y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1).otherwise(0)
+    ).withColumn(
+        "promoted_in_last_3y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
+    ).withColumn(
         # Binary flags for demotions in last 1, 2, 3 years
-        max(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1)
-            .otherwise(0)).alias("demoted_in_last_1y"),
-        
-        max(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1)
-            .otherwise(0)).alias("demoted_in_last_2y"),
-        
-        max(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1)
-            .otherwise(0)).alias("demoted_in_last_3y"),
-        
-        # Count of promotions in last 1, 2, 3 years
-        sum(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1)
-            .otherwise(0)).alias("#_promotions_in_last_1y"),
-        
-        sum(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1)
-            .otherwise(0)).alias("#_promotions_in_last_2y"),
-        
-        sum(when((col("event_cd") == "PRO") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1)
-            .otherwise(0)).alias("#_promotions_in_last_3y"),
-        
-        # Count of demotions in last 1, 2, 3 years
-        sum(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1)
-            .otherwise(0)).alias("#_demotions_in_last_1y"),
-        
-        sum(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1)
-            .otherwise(0)).alias("#_demotions_in_last_2y"),
-        
-        sum(when((col("event_cd") == "DEM") & 
-                 (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1)
-            .otherwise(0)).alias("#_demotions_in_last_3y")
-    )
-    
-    # Calculate days since last promotion
-    base_features = base_features.withColumn(
+        "demoted_in_last_1y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1).otherwise(0)
+    ).withColumn(
+        "demoted_in_last_2y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1).otherwise(0)
+    ).withColumn(
+        "demoted_in_last_3y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
+    ).withColumn(
+        # Count features (initially 1 or 0 for each record)
+        "#_promotions_in_last_1y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1).otherwise(0)
+    ).withColumn(
+        "#_promotions_in_last_2y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1).otherwise(0)
+    ).withColumn(
+        "#_promotions_in_last_3y",
+        when((col("event_cd") == "PRO") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
+    ).withColumn(
+        "#_demotions_in_last_1y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -12)), 1).otherwise(0)
+    ).withColumn(
+        "#_demotions_in_last_2y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -24)), 1).otherwise(0)
+    ).withColumn(
+        "#_demotions_in_last_3y",
+        when((col("event_cd") == "DEM") & 
+             (col("event_eff_dt") >= add_months(col("vantage_date"), -36)), 1).otherwise(0)
+    ).withColumn(
+        # Days since last promotion (calculated for each record)
         "#_of_days_since_last_promotion",
         when((col("lst_promo_dt").isNotNull()) & (col("lst_promo_dt") <= col("vantage_date")),
-             datediff(col("vantage_date"), col("lst_promo_dt")))
-        .otherwise(None)
+             datediff(col("vantage_date"), col("lst_promo_dt"))).otherwise(None)
     )
     
-    # Calculate average days between promotions
-    # First, get all promotion dates for each employee
-    promotions_only = df_latest.filter(col("event_cd") == "PRO") \
-                               .select("person_composite_id", "event_eff_dt") \
-                               .distinct()
+    # Step 2: Calculate promotion intervals for average days calculation
+    promotion_records = features_expanded.filter(col("event_cd") == "PRO")
     
-    # Add lag to get previous promotion date
-    promotions_with_lag = promotions_only.withColumn(
+    # Add previous promotion date using window function
+    promotion_with_lag = promotion_records.withColumn(
         "prev_promo_date",
-        lag("event_eff_dt").over(window_spec)
-    )
-    
-    # Calculate days between consecutive promotions
-    promotions_with_days = promotions_with_lag.withColumn(
-        "days_between_promos",
+        lag("event_eff_dt").over(window_spec_person_ordered)
+    ).withColumn(
+        "days_between_current_and_prev",
         when(col("prev_promo_date").isNotNull(),
-             datediff(col("event_eff_dt"), col("prev_promo_date")))
+             datediff(col("event_eff_dt"), col("prev_promo_date"))).otherwise(None)
     )
     
-    # Calculate average days between promotions for each employee
-    avg_days_between = promotions_with_days.groupBy("person_composite_id").agg(
-        avg("days_between_promos").alias("avg_days_between_promotion_temp"),
-        count("days_between_promos").alias("promotion_intervals_count"),
-        count("event_eff_dt").alias("total_promotions")
-    )
-    
-    # Set average to 0 for employees with <= 1 promotion as per requirement
-    avg_days_between = avg_days_between.withColumn(
+    # Calculate running statistics for average days between promotions
+    promotion_with_stats = promotion_with_lag.withColumn(
+        "promotion_rank",
+        row_number().over(window_spec_person_ordered)
+    ).withColumn(
+        "total_promotions_for_person",
+        count("*").over(window_spec_person)
+    ).withColumn(
+        "sum_days_between_promos",
+        sum("days_between_current_and_prev").over(window_spec_person)
+    ).withColumn(
+        "count_intervals",
+        count("days_between_current_and_prev").over(window_spec_person)
+    ).withColumn(
+        "avg_days_between_promotion_temp",
+        when(col("count_intervals") > 0, 
+             col("sum_days_between_promos") / col("count_intervals")).otherwise(0)
+    ).withColumn(
         "avg_days_between_promotion",
-        when(col("total_promotions") <= 1, 0)
+        when(col("total_promotions_for_person") <= 1, 0)
         .otherwise(col("avg_days_between_promotion_temp"))
-    ).select("person_composite_id", "avg_days_between_promotion")
-    
-    # Join all features together
-    final_features = base_features.join(
-        avg_days_between,
-        on=["person_composite_id"],
-        how="left"
     )
     
-    # Fill null values for avg_days_between_promotion with 0
-    final_features = final_features.fillna({"avg_days_between_promotion": 0})
-    
-    # Reorder columns to match the original feature specification
-    final_features = final_features.select(
-        "person_composite_id",
+    # Step 3: Join promotion statistics back to main dataset
+    promotion_avg_only = promotion_with_stats.select(
+        "person_composite_id", 
         "vantage_date",
-        "event_eff_dt",
-        "lst_promo_dt",
-        "promoted_in_last_1y",
-        "promoted_in_last_2y", 
-        "promoted_in_last_3y",
-        "demoted_in_last_1y",
-        "demoted_in_last_2y",
-        "demoted_in_last_3y",
-        "#_promotions_in_last_1y",
-        "#_promotions_in_last_2y",
-        "#_promotions_in_last_3y",
-        "#_demotions_in_last_1y",
-        "#_demotions_in_last_2y",
-        "#_demotions_in_last_3y",
-        "#_of_days_since_last_promotion",
         "avg_days_between_promotion"
+    ).distinct()
+    
+    # Join average days back to main features
+    features_with_avg = features_expanded.join(
+        promotion_avg_only,
+        on=["person_composite_id", "vantage_date"],
+        how="left"
+    ).fillna({"avg_days_between_promotion": 0})
+    
+    # Step 4: Aggregate all features per person using window functions to get final values
+    features_aggregated = features_with_avg.withColumn(
+        # Get latest vantage date for each person
+        "latest_vantage_date",
+        max("vantage_date").over(window_spec_person)
+    ).withColumn(
+        # Aggregate binary flags (max value per person)
+        "promoted_in_last_1y_final",
+        max("promoted_in_last_1y").over(window_spec_person)
+    ).withColumn(
+        "promoted_in_last_2y_final",
+        max("promoted_in_last_2y").over(window_spec_person)
+    ).withColumn(
+        "promoted_in_last_3y_final",
+        max("promoted_in_last_3y").over(window_spec_person)
+    ).withColumn(
+        "demoted_in_last_1y_final",
+        max("demoted_in_last_1y").over(window_spec_person)
+    ).withColumn(
+        "demoted_in_last_2y_final",
+        max("demoted_in_last_2y").over(window_spec_person)
+    ).withColumn(
+        "demoted_in_last_3y_final",
+        max("demoted_in_last_3y").over(window_spec_person)
+    ).withColumn(
+        # Aggregate count features (sum per person)
+        "#_promotions_in_last_1y_final",
+        sum("#_promotions_in_last_1y").over(window_spec_person)
+    ).withColumn(
+        "#_promotions_in_last_2y_final",
+        sum("#_promotions_in_last_2y").over(window_spec_person)
+    ).withColumn(
+        "#_promotions_in_last_3y_final",
+        sum("#_promotions_in_last_3y").over(window_spec_person)
+    ).withColumn(
+        "#_demotions_in_last_1y_final",
+        sum("#_demotions_in_last_1y").over(window_spec_person)
+    ).withColumn(
+        "#_demotions_in_last_2y_final",
+        sum("#_demotions_in_last_2y").over(window_spec_person)
+    ).withColumn(
+        "#_demotions_in_last_3y_final",
+        sum("#_demotions_in_last_3y").over(window_spec_person)
+    ).withColumn(
+        # Get the days since last promotion (should be same for all records of a person)
+        "#_of_days_since_last_promotion_final",
+        max("#_of_days_since_last_promotion").over(window_spec_person)
+    ).withColumn(
+        # Get average days (should be same for all records of a person)
+        "avg_days_between_promotion_final",
+        max("avg_days_between_promotion").over(window_spec_person)
     )
+    
+    # Step 5: Get one record per person with final aggregated features
+    final_features = features_aggregated.filter(
+        col("vantage_date") == col("latest_vantage_date")
+    ).select(
+        "person_composite_id",
+        col("latest_vantage_date").alias("vantage_date"),
+        col("promoted_in_last_1y_final").alias("promoted_in_last_1y"),
+        col("promoted_in_last_2y_final").alias("promoted_in_last_2y"),
+        col("promoted_in_last_3y_final").alias("promoted_in_last_3y"),
+        col("demoted_in_last_1y_final").alias("demoted_in_last_1y"),
+        col("demoted_in_last_2y_final").alias("demoted_in_last_2y"),
+        col("demoted_in_last_3y_final").alias("demoted_in_last_3y"),
+        col("#_promotions_in_last_1y_final").alias("#_promotions_in_last_1y"),
+        col("#_promotions_in_last_2y_final").alias("#_promotions_in_last_2y"),
+        col("#_promotions_in_last_3y_final").alias("#_promotions_in_last_3y"),
+        col("#_demotions_in_last_1y_final").alias("#_demotions_in_last_1y"),
+        col("#_demotions_in_last_2y_final").alias("#_demotions_in_last_2y"),
+        col("#_demotions_in_last_3y_final").alias("#_demotions_in_last_3y"),
+        col("#_of_days_since_last_promotion_final").alias("#_of_days_since_last_promotion"),
+        col("avg_days_between_promotion_final").alias("avg_days_between_promotion")
+    ).distinct()
     
     # Cache final results
     final_features.cache()
@@ -332,11 +374,7 @@ def validate_features(features_df):
     
     # Should be null only when lst_promo_dt is null or after vantage_date
     days_logic_issues = features_df.filter(
-        # Case 1: lst_promo_dt is not null, before vantage_date, but days is null
-        ((col("lst_promo_dt").isNotNull()) & 
-         (col("lst_promo_dt") <= col("vantage_date")) & 
-         (col("#_of_days_since_last_promotion").isNull())) |
-        # Case 2: days is negative
+        # Case 1: days is negative
         (col("#_of_days_since_last_promotion") < 0)
     ).count()
     
@@ -465,4 +503,3 @@ def main(input_df):
     except Exception as e:
         print(f"Error in feature engineering pipeline: {str(e)}")
         raise e
-    

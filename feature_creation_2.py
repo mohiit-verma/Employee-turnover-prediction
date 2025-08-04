@@ -49,7 +49,9 @@ def add_promotion_demotion_transfer_features(df):
         F.when(F.col("event_rsn_cd").isin(["RES", "REO", "MOR", "TRP", "ORG", "MPC", "ROS"]), 1).otherwise(0)
     ).withColumn(
         "is_performance_issues",
-        F.when(F.col("event_rsn_cd").isin(["USP", "Unsatisfactory Performance", "PER", "Demote - Performance", "Performance", "UNS", "Demote Performance", "Unsatisfactory Performance - USP", "301", "USI", "UP", "Performance-Driven", "DUP", "PEF", "IPR", "307", "PNU"]), 1).otherwise(0)
+        F.when(F.col("event_rsn_cd").isin(["USP", "Unsatisfactory Performance", "PER", "Demote - Performance", 
+                                          "Performance", "UNS", "Demote Performance", "Unsatisfactory Performance - USP", 
+                                          "301", "USI", "UP", "Performance-Driven", "DUP", "PEF", "IPR", "S07", "PNU"]), 1).otherwise(0)
     ).withColumn(
         "is_employee_request",
         F.when(F.col("event_rsn_cd").isin(["EER", "Employee Request", "ER2", "ER1", "EE"]), 1).otherwise(0)
@@ -64,46 +66,22 @@ def add_promotion_demotion_transfer_features(df):
         F.when(F.col("event_rsn_cd").isin(["TMP", "Expatriate Assignment", "ASC", "EXP", "1", "SAB", "SPA", "IPA"]), 1).otherwise(0)
     )
     
-    # Define window for time-based calculations
-    window_person = Window.partitionBy("person_composit_id").orderBy("event_eff_dt")
-    window_person_desc = Window.partitionBy("person_composit_id").orderBy(F.desc("event_eff_dt"))
-    
-    # Calculate days since last transfer
-    print("Calculating days since last transfer...")
-    # First, create a dataset with only transfer events to calculate previous transfer dates
-    transfer_events = df_with_reasons.filter(F.col("is_transfer") == 1)
-    
-    # Add previous transfer date for transfer events only
-    transfer_with_prev = transfer_events.withColumn(
-        "prev_transfer_date",
-        F.lag("event_eff_dt").over(window_person)
-    )
-    
-    # Calculate days since last transfer for each person
-    # Get the most recent transfer date for each person
-    latest_transfer_per_person = transfer_with_prev.groupBy("person_composit_id").agg(
-        F.max("event_eff_dt").alias("last_transfer_date")
-    )
-    
-    # Join back to main dataset and calculate days since last transfer
-    df_with_transfer_days = df_with_reasons.join(
-        latest_transfer_per_person, 
-        ["person_composit_id"], 
-        "left"
-    ).withColumn(
-        "days_since_last_transfer",
-        F.when(F.col("last_transfer_date").isNotNull(),
-               F.datediff(F.col("vantage_date"), F.col("last_transfer_date")))
-        .otherwise(F.lit(None))
-    ).drop("last_transfer_date")
-    
     # Calculate last 2 years window
     print("Creating 2-year lookback window...")
     two_years_ago = F.date_sub(F.col("vantage_date"), 730)  # 2 years = 730 days
     
-    df_with_lookback = df_with_transfer_days.withColumn(
+    df_with_lookback = df_with_reasons.withColumn(
         "is_within_2_years",
         F.when(F.col("event_eff_dt") >= two_years_ago, 1).otherwise(0)
+    )
+    
+    # Calculate days since last transfer for each person
+    print("Calculating days since last transfer...")
+    transfer_events = df_with_lookback.filter(F.col("is_transfer") == 1)
+    
+    # Get the most recent transfer date for each person
+    latest_transfer_per_person = transfer_events.groupBy("person_composit_id").agg(
+        F.max("event_eff_dt").alias("last_transfer_date")
     )
     
     # Generate aggregate features per person
@@ -125,10 +103,7 @@ def add_promotion_demotion_transfer_features(df):
         F.max(F.when((F.col("is_transfer") == 1) & (F.col("is_employee_request") == 1), 1).otherwise(0)).alias("transfer_due_to_employee_request"),
         F.max(F.when((F.col("is_transfer") == 1) & (F.col("is_skill_based") == 1), 1).otherwise(0)).alias("transfer_based_on_skill"),
         F.max(F.when((F.col("is_transfer") == 1) & (F.col("is_relocation") == 1), 1).otherwise(0)).alias("transfer_due_to_employee_relocation"),
-        F.max(F.when((F.col("is_transfer") == 1) & (F.col("is_assignment") == 1), 1).otherwise(0)).alias("transfer_due_to_assignment"),
-        
-        # Days since last transfer
-        F.min("days_since_last_transfer").alias("days_since_last_transfer")
+        F.max(F.when((F.col("is_transfer") == 1) & (F.col("is_assignment") == 1), 1).otherwise(0)).alias("transfer_due_to_assignment")
     )
     
     # Get the original dataframe structure (one record per person)
@@ -138,6 +113,15 @@ def add_promotion_demotion_transfer_features(df):
     # Join aggregated features back to base dataframe
     print("Joining features back to base dataframe...")
     result_df = base_df.join(person_aggregates, ["person_composit_id", "vantage_date"], "left")
+    
+    # Join days since last transfer
+    print("Adding days since last transfer...")
+    result_df = result_df.join(latest_transfer_per_person, ["person_composit_id"], "left").withColumn(
+        "days_since_last_transfer",
+        F.when(F.col("last_transfer_date").isNotNull(),
+               F.datediff(F.col("vantage_date"), F.col("last_transfer_date")))
+        .otherwise(F.lit(None))
+    ).drop("last_transfer_date")
     
     # Fill null values with 0 for binary features and appropriate defaults for others
     print("Filling null values with appropriate defaults...")
@@ -162,50 +146,172 @@ def add_promotion_demotion_transfer_features(df):
     result_df = result_df.withColumn("total_transfers_in_last2_years", F.coalesce(F.col("total_transfers_in_last2_years"), F.lit(0)))
     
     print("Feature generation completed successfully!")
+    return result_df
+
+
+def validate_features(base_df, result_df):
+    """
+    Comprehensive validation function for generated features
     
-    # Validation section
-    print("\n=== FEATURE VALIDATION ===")
+    Args:
+        base_df: Original base dataframe
+        result_df: Dataframe with generated features
     
-    # Validate record count
+    Returns:
+        dict: Validation results
+    """
+    
+    print("\n=== STARTING FEATURE VALIDATION ===")
+    
+    validation_results = {}
+    
+    # Validation 1: Record count consistency
+    print("Validation 1: Checking record count consistency...")
     base_count = base_df.count()
     result_count = result_df.count()
-    print(f"Validation 1 - Record Count: Base DF: {base_count}, Result DF: {result_count}")
-    print(f"Record count consistency: {'PASS' if base_count == result_count else 'FAIL'}")
+    validation_results['record_count_match'] = base_count == result_count
+    print(f"  Base DF records: {base_count}")
+    print(f"  Result DF records: {result_count}")
+    print(f"  Record count consistency: {'PASS' if validation_results['record_count_match'] else 'FAIL'}")
     
-    # Validate no duplicate person records
+    # Validation 2: One record per person
+    print("\nValidation 2: Checking uniqueness of person records...")
     distinct_persons = result_df.select("person_composit_id").distinct().count()
-    print(f"Validation 2 - Unique persons: {distinct_persons}")
-    print(f"One record per person: {'PASS' if distinct_persons == result_count else 'FAIL'}")
+    validation_results['one_record_per_person'] = distinct_persons == result_count
+    print(f"  Unique persons: {distinct_persons}")
+    print(f"  Total records: {result_count}")
+    print(f"  One record per person: {'PASS' if validation_results['one_record_per_person'] else 'FAIL'}")
     
-    # Validate binary features are indeed binary (0 or 1)
-    print("Validation 3 - Binary feature ranges:")
-    for col in feature_columns:
+    # Validation 3: Binary feature ranges
+    print("\nValidation 3: Checking binary feature value ranges...")
+    binary_features = [
+        "promotion_due_to_outstanding_performance",
+        "promotion_only_title_change", 
+        "promotion_due_to_market_adjustment",
+        "demotion_due_to_company_reorg_in_last2_years",
+        "demotion_due_to_performance_issues_in_last2_years",
+        "transferred_in_last2_years",
+        "transfer_due_to_company_reorg",
+        "transfer_due_to_employee_request",
+        "transfer_based_on_skill",
+        "transfer_due_to_employee_relocation",
+        "transfer_due_to_assignment"
+    ]
+    
+    validation_results['binary_features_valid'] = True
+    for col in binary_features:
         min_val = result_df.agg(F.min(col)).collect()[0][0]
         max_val = result_df.agg(F.max(col)).collect()[0][0]
         is_binary = min_val in [0, None] and max_val in [0, 1, None]
+        if not is_binary:
+            validation_results['binary_features_valid'] = False
         print(f"  {col}: Min={min_val}, Max={max_val}, Binary={'PASS' if is_binary else 'FAIL'}")
     
-    # Validate transfer count is non-negative
+    # Validation 4: Transfer count validation
+    print("\nValidation 4: Checking transfer count validity...")
     min_transfers = result_df.agg(F.min("total_transfers_in_last2_years")).collect()[0][0]
     max_transfers = result_df.agg(F.max("total_transfers_in_last2_years")).collect()[0][0]
-    print(f"Validation 4 - Transfer counts: Min={min_transfers}, Max={max_transfers}")
-    print(f"Non-negative transfers: {'PASS' if min_transfers >= 0 else 'FAIL'}")
+    validation_results['transfers_non_negative'] = min_transfers >= 0
+    print(f"  Transfer counts - Min: {min_transfers}, Max: {max_transfers}")
+    print(f"  Non-negative transfers: {'PASS' if validation_results['transfers_non_negative'] else 'FAIL'}")
     
-    # Validate days since last transfer
+    # Validation 5: Days since last transfer
+    print("\nValidation 5: Checking days since last transfer...")
     min_days = result_df.agg(F.min("days_since_last_transfer")).collect()[0][0]
     max_days = result_df.agg(F.max("days_since_last_transfer")).collect()[0][0]
-    print(f"Validation 5 - Days since transfer: Min={min_days}, Max={max_days}")
+    non_null_days_count = result_df.filter(F.col("days_since_last_transfer").isNotNull()).count()
+    validation_results['days_valid'] = min_days is None or min_days >= 0
+    print(f"  Days since transfer - Min: {min_days}, Max: {max_days}")
+    print(f"  Non-null records: {non_null_days_count}")
+    print(f"  Valid days range: {'PASS' if validation_results['days_valid'] else 'FAIL'}")
     
-    # Logical validation: if transferred_in_last2_years = 1, then total_transfers_in_last2_years >= 1
-    logical_check = result_df.filter(
+    # Validation 6: Logical consistency
+    print("\nValidation 6: Checking logical consistency...")
+    # If transferred_in_last2_years = 1, then total_transfers_in_last2_years >= 1
+    inconsistent_records = result_df.filter(
         (F.col("transferred_in_last2_years") == 1) & (F.col("total_transfers_in_last2_years") == 0)
     ).count()
-    print(f"Validation 6 - Logical consistency (transferred flag vs count): Inconsistent records={logical_check}")
-    print(f"Logical consistency: {'PASS' if logical_check == 0 else 'FAIL'}")
+    validation_results['logical_consistency'] = inconsistent_records == 0
+    print(f"  Inconsistent transfer records: {inconsistent_records}")
+    print(f"  Logical consistency: {'PASS' if validation_results['logical_consistency'] else 'FAIL'}")
     
+    # Validation 7: Feature distribution summary
+    print("\nValidation 7: Feature distribution summary...")
+    promotion_features = result_df.filter(
+        (F.col("promotion_due_to_outstanding_performance") == 1) |
+        (F.col("promotion_only_title_change") == 1) |
+        (F.col("promotion_due_to_market_adjustment") == 1)
+    ).count()
+    
+    demotion_features = result_df.filter(
+        (F.col("demotion_due_to_company_reorg_in_last2_years") == 1) |
+        (F.col("demotion_due_to_performance_issues_in_last2_years") == 1)
+    ).count()
+    
+    transfer_features = result_df.filter(F.col("transferred_in_last2_years") == 1).count()
+    
+    print(f"  Records with promotion features: {promotion_features}")
+    print(f"  Records with demotion features: {demotion_features}")
+    print(f"  Records with transfer features: {transfer_features}")
+    
+    # Overall validation result
+    all_validations_pass = all(validation_results.values())
+    validation_results['overall_validation'] = all_validations_pass
+    
+    print(f"\n=== VALIDATION SUMMARY ===")
+    print(f"Overall validation result: {'PASS' if all_validations_pass else 'FAIL'}")
     print("=== VALIDATION COMPLETED ===\n")
     
-    return result_df
+    return validation_results
+
+
+def print_feature_summary(result_df):
+    """
+    Print summary statistics for all generated features
+    
+    Args:
+        result_df: DataFrame with generated features
+    """
+    
+    print("\n=== FEATURE SUMMARY ===")
+    
+    # Binary features summary
+    binary_features = [
+        "promotion_due_to_outstanding_performance",
+        "promotion_only_title_change", 
+        "promotion_due_to_market_adjustment",
+        "demotion_due_to_company_reorg_in_last2_years",
+        "demotion_due_to_performance_issues_in_last2_years",
+        "transferred_in_last2_years",
+        "transfer_due_to_company_reorg",
+        "transfer_due_to_employee_request",
+        "transfer_based_on_skill",
+        "transfer_due_to_employee_relocation",
+        "transfer_due_to_assignment"
+    ]
+    
+    print("Binary Features (Count of 1s):")
+    for col in binary_features:
+        count_ones = result_df.agg(F.sum(col)).collect()[0][0]
+        percentage = (count_ones / result_df.count()) * 100
+        print(f"  {col}: {count_ones} ({percentage:.1f}%)")
+    
+    # Numeric features summary
+    print("\nNumeric Features:")
+    avg_transfers = result_df.agg(F.avg("total_transfers_in_last2_years")).collect()[0][0]
+    max_transfers = result_df.agg(F.max("total_transfers_in_last2_years")).collect()[0][0]
+    print(f"  total_transfers_in_last2_years: Average = {avg_transfers:.2f}, Max = {max_transfers}")
+    
+    # Days since transfer summary
+    non_null_days = result_df.filter(F.col("days_since_last_transfer").isNotNull()).count()
+    if non_null_days > 0:
+        avg_days = result_df.agg(F.avg("days_since_last_transfer")).collect()[0][0]
+        print(f"  days_since_last_transfer: Non-null records = {non_null_days}, Average = {avg_days:.1f} days")
+    else:
+        print(f"  days_since_last_transfer: No records with transfer history")
+    
+    print("=== FEATURE SUMMARY COMPLETED ===\n")
+
 
 def main(df):
     """
@@ -214,42 +320,34 @@ def main(df):
     # Initialize Spark session
     spark = SparkSession.builder \
         .appName("EmployeeFeatureGeneration") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
         .getOrCreate()
     
-    print(f"Original dataset shape: {df.count()} rows")
+    # Load the data
+    print("Loading employee dataset...")
+    df = spark.table("table_name")  # Replace with actual table name
+    
+    print(f"Original dataset loaded with {df.count()} rows")
+    
+    # Create base dataframe for validation
+    base_df = df.select("person_composit_id", "vantage_date").distinct()
+    print(f"Unique person-vantage combinations: {base_df.count()}")
     
     # Generate features
     result_df = add_promotion_demotion_transfer_features(df)
     
     print(f"Final dataset with features: {result_df.count()} rows")
     
-    # Show feature summary
-    print("\nFeature Summary:")
-    feature_cols = [
-        "promotion_due_to_outstanding_performance",
-        "promotion_only_title_change", 
-        "promotion_due_to_market_adjustment",
-        "demotion_due_to_company_reorg_in_last2_years",
-        "demotion_due_to_performance_issues_in_last2_years",
-        "transferred_in_last2_years",
-        "total_transfers_in_last2_years",
-        "transfer_due_to_company_reorg",
-        "transfer_due_to_employee_request",
-        "transfer_based_on_skill",
-        "transfer_due_to_employee_relocation",
-        "transfer_due_to_assignment",
-        "days_since_last_transfer"
-    ]
+    # Validate features
+    validation_results = validate_features(base_df, result_df)
     
-    for col in feature_cols:
-        if col == "total_transfers_in_last2_years":
-            avg_val = result_df.agg(F.avg(col)).collect()[0][0]
-            print(f"{col}: Average = {avg_val:.2f}")
-        elif col == "days_since_last_transfer":
-            non_null_count = result_df.filter(F.col(col).isNotNull()).count()
-            print(f"{col}: Non-null records = {non_null_count}")
-        else:
-            sum_val = result_df.agg(F.sum(col)).collect()[0][0]
-            print(f"{col}: Total = {sum_val}")
+    # Print feature summary
+    print_feature_summary(result_df)
     
-    return result_df
+    # Cache the result for performance if needed for further operations
+    result_df.cache()
+    
+    print("Feature generation and validation process completed successfully!")
+    
+    return result_df, validation_results

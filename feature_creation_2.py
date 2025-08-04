@@ -70,15 +70,32 @@ def add_promotion_demotion_transfer_features(df):
     
     # Calculate days since last transfer
     print("Calculating days since last transfer...")
-    df_with_transfer_days = df_with_reasons.withColumn(
+    # First, create a dataset with only transfer events to calculate previous transfer dates
+    transfer_events = df_with_reasons.filter(F.col("is_transfer") == 1)
+    
+    # Add previous transfer date for transfer events only
+    transfer_with_prev = transfer_events.withColumn(
         "prev_transfer_date",
-        F.lag("event_eff_dt").over(window_person.filter(F.col("is_transfer") == 1))
+        F.lag("event_eff_dt").over(window_person)
+    )
+    
+    # Calculate days since last transfer for each person
+    # Get the most recent transfer date for each person
+    latest_transfer_per_person = transfer_with_prev.groupBy("person_composit_id").agg(
+        F.max("event_eff_dt").alias("last_transfer_date")
+    )
+    
+    # Join back to main dataset and calculate days since last transfer
+    df_with_transfer_days = df_with_reasons.join(
+        latest_transfer_per_person, 
+        ["person_composit_id"], 
+        "left"
     ).withColumn(
         "days_since_last_transfer",
-        F.when(F.col("prev_transfer_date").isNotNull(),
-               F.datediff(F.col("vantage_date"), F.col("prev_transfer_date")))
+        F.when(F.col("last_transfer_date").isNotNull(),
+               F.datediff(F.col("vantage_date"), F.col("last_transfer_date")))
         .otherwise(F.lit(None))
-    )
+    ).drop("last_transfer_date")
     
     # Calculate last 2 years window
     print("Creating 2-year lookback window...")
@@ -190,7 +207,7 @@ def add_promotion_demotion_transfer_features(df):
     
     return result_df
 
-def main():
+def main(df):
     """
     Main function to execute the feature generation process
     """
@@ -198,10 +215,6 @@ def main():
     spark = SparkSession.builder \
         .appName("EmployeeFeatureGeneration") \
         .getOrCreate()
-    
-    # Load the data
-    print("Loading employee dataset...")
-    df = spark.table("table_name")  # Replace with actual table name
     
     print(f"Original dataset shape: {df.count()} rows")
     
@@ -240,6 +253,3 @@ def main():
             print(f"{col}: Total = {sum_val}")
     
     return result_df
-
-if __name__ == "__main__":
-    final_df = main()

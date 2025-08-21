@@ -1,0 +1,14 @@
+Feature	Salary Increase 25%	Promotion	Rationale
+DIRECT CHANGES			
+baseline_salary	x1.25	+10% (typical promotion bump)	Direct salary target / promotion usually includes raise
+job_level	No change	+1 (if numeric < 10)	Direct promotion target
+career_stage	No change	Advance one stage	Direct promotion progression
+salary_growth_rate_12m	Set to 25.0	Set to 10.0	Growth rate from respective salary increases
+pay_grade_stagnation_months	Set to 0	Set to 0	Both reset stagnation
+salary_growth_rate12m_to_cpi_rate	25%	10%	Salary vs living costs improvement
+SECONDARY CHANGES			
+time_since_last_promotion	No change	Set to 0	Fresh promotion resets counter
+job_chng_2yr_ind	No change	Set to 1	Promotion counts as job change
+team_avg_comp	0.80%	0.30%	Individual salary affects team average
+sal_nghb_ratio	12%	5%	Neighborhood salary comparison improves
+compensation_volatility	0.05	0.02	Recent salary change adds volatility

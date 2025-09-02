@@ -150,3 +150,22 @@ employee_risk, employee_prob = assign_employee_risk(
 )
 print(f"Employee risk: {employee_risk} (probability: {employee_prob:.3f})")
 
+def create_risk_categories_business(probabilities, high_threshold=0.7, low_threshold=0.3):
+    """
+    Categorize employees based on business-defined thresholds
+    """
+    risk_categories = np.empty(len(probabilities), dtype='<U6')
+    
+    risk_categories[probabilities >= high_threshold] = 'High'
+    risk_categories[(probabilities >= low_threshold) & (probabilities < high_threshold)] = 'Medium'
+    risk_categories[probabilities < low_threshold] = 'Low'
+    
+    return risk_categories
+
+# Example thresholds
+risk_cats = create_risk_categories_business(cal_probs, high_threshold=0.6, low_threshold=0.25)
+
+# Check distribution
+unique, counts = np.unique(risk_cats, return_counts=True)
+for cat, count in zip(unique, counts):
+    print(f"{cat} risk: {count} employees ({count/len(risk_cats)*100:.1f}%)")

@@ -42,8 +42,10 @@ def aft_to_probability(aft_model, X, time_horizon):
     
     # Convert to probability of event before time_horizon
     # Using exponential survival: P(T <= t) = 1 - exp(-t/λ)
-    probabilities = 1 - np.exp(-time_horizon / pred_survival_times)
     
+    # replace exponential with extreme
+    # probabilities = 1 - np.exp(-time_horizon / pred_survival_times)
+    probabilities = 1 - np.exp(-np.exp((np.log(time_horizon) - np.log(survival_times)) / sigma))
     # Clip to valid probability range
     return np.clip(probabilities, 0.001, 0.999)
 
@@ -124,7 +126,9 @@ def assign_employee_risk(aft_model, calibrator, employee_features,
     survival_time = aft_model.predict(employee_features.reshape(1, -1))[0]
     
     # Convert to uncalibrated probability
-    uncal_prob = 1 - np.exp(-time_horizon / survival_time)
+    # replace exponential with extreme
+    # uncal_prob = 1 - np.exp(-time_horizon / survival_time)
+    uncal_prob = 1 - np.exp(-np.exp((np.log(time_horizon) - np.log(survival_times)) / sigma))
     
     # Apply Platt calibration
     cal_prob = calibrator.predict_proba([[uncal_prob]])[0, 1]

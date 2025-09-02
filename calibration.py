@@ -82,3 +82,67 @@ for horizon in horizons:
     
     calibrators[horizon] = LogisticRegression()
     calibrators[horizon].fit(uncal_probs.reshape(-1, 1), y_binary)
+
+
+def plot_calibration_by_risk_group(probabilities, actual_outcomes, risk_categories):
+    """
+    Plot calibration curves for each risk group
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    for i, risk_level in enumerate(['Low', 'Medium', 'High']):
+        mask = risk_categories == risk_level
+        if np.sum(mask) > 10:  # Need sufficient samples
+            
+            probs_subset = probabilities[mask]
+            outcomes_subset = actual_outcomes[mask]
+            
+            fraction_pos, mean_pred = calibration_curve(
+                outcomes_subset, probs_subset, n_bins=min(10, len(probs_subset)//5)
+            )
+            
+            axes[i].plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Perfect calibration')
+            axes[i].plot(mean_pred, fraction_pos, 'o-', label=f'{risk_level} risk')
+            axes[i].set_xlabel('Mean Predicted Probability')
+            axes[i].set_ylabel('Fraction of Positives')
+            axes[i].set_title(f'{risk_level} Risk Calibration')
+            axes[i].legend()
+            axes[i].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+plot_calibration_by_risk_group(cal_probs, y_val_binary, risk_cats)
+
+
+def assign_employee_risk(aft_model, calibrator, employee_features, 
+                        time_horizon, high_threshold, low_threshold):
+    """
+    Assign risk category to new employees
+    """
+    # Get AFT prediction
+    survival_time = aft_model.predict(employee_features.reshape(1, -1))[0]
+    
+    # Convert to uncalibrated probability
+    uncal_prob = 1 - np.exp(-time_horizon / survival_time)
+    
+    # Apply Platt calibration
+    cal_prob = calibrator.predict_proba([[uncal_prob]])[0, 1]
+    
+    # Assign risk category
+    if cal_prob >= high_threshold:
+        risk = 'High'
+    elif cal_prob >= low_threshold:
+        risk = 'Medium'
+    else:
+        risk = 'Low'
+    
+    return risk, cal_prob
+
+# Example usage
+employee_risk, employee_prob = assign_employee_risk(
+    aft_model, calibrator, new_employee_features, 
+    time_horizon=365, high_threshold=0.6, low_threshold=0.25
+)
+print(f"Employee risk: {employee_risk} (probability: {employee_prob:.3f})")
+
